@@ -287,7 +287,10 @@ for (const e of entries) {
   if (fontFamilyPropRE.test(e.prop)) {
     const lit = normalizeFontFamilyList(e.value);
     if (!isCssWideKeyword(lit)) {
-      byFontFamily.set(lit, { count: (byFontFamily.get(lit)?.count || 0) + 1 });
+      if (!byFontFamily.has(lit)) byFontFamily.set(lit, { count: 0, selectors: [] });
+      const node = byFontFamily.get(lit);
+      node.count++;
+      node.selectors.push(e.selector);
     }
   }
 
@@ -297,7 +300,10 @@ for (const e of entries) {
     if (sh.family) {
       const fam = normalizeFontFamilyList(sh.family);
       if (!isCssWideKeyword(fam)) {
-        byFontFamily.set(fam, { count: (byFontFamily.get(fam)?.count || 0) + 1 });
+        if (!byFontFamily.has(fam)) byFontFamily.set(fam, { count: 0, selectors: [] });
+        const node = byFontFamily.get(fam);
+        node.count++;
+        node.selectors.push(e.selector);
       }
     }
   }
@@ -563,10 +569,46 @@ if (features.includes('typography')) {
   const nameFW = makeNameFactory(PREFIX_FW);
   const nameLS = makeNameFactory(PREFIX_LS);
 
+  // categorize font families based on selector hints
+  const headingRe = /\bh[1-6]\b/i;
+  const bodyRe = /\bbody\b/i;
+  const monoRe = /\b(pre|code|kbd|samp)\b/i;
+  for (const [, data] of byFontFamily) {
+    data.hints = new Set();
+    for (const sel of data.selectors || []) {
+      if (headingRe.test(sel)) data.hints.add('heading');
+      if (bodyRe.test(sel)) data.hints.add('body');
+      if (monoRe.test(sel)) data.hints.add('monospace');
+    }
+  }
+
   ffOrder = [...byFontFamily.entries()]
     .sort((a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]))
     .map(([k]) => k);
-  ffMap = new Map(ffOrder.map((v, i) => [v, nameFF(v, i)]));
+
+  const semanticFF = {
+    heading: '--font-family-heading',
+    body: '--font-family-body',
+    monospace: '--font-family-monospace',
+  };
+  const usedCats = new Set();
+  ffMap = new Map();
+  let genericIdx = 0;
+  for (const fam of ffOrder) {
+    const hints = byFontFamily.get(fam).hints;
+    let vname = null;
+    if (hints) {
+      for (const cat of Object.keys(semanticFF)) {
+        if (hints.has(cat) && !usedCats.has(cat)) {
+          vname = semanticFF[cat];
+          usedCats.add(cat);
+          break;
+        }
+      }
+    }
+    if (!vname) vname = nameFF(fam, genericIdx++);
+    ffMap.set(fam, vname);
+  }
 
   fsOrder = [...byFontSize.entries()]
     .sort((a, b) => b[1].count - a[1].count || lenToPxSafe(b[0]) - lenToPxSafe(a[0]))
