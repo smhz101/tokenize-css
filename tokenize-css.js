@@ -130,13 +130,35 @@ const PREFIX_LH = flag('--prefix-line-height', 'lh'); // --lh-1, ...
 const PREFIX_LS = flag('--prefix-letter-spacing', 'ls'); // --ls-1, ...
 const PREFIX_FW = flag('--prefix-font-weight', 'fw'); // --fw-1, ...
 
-/** stable name generator (index or hash), guarded against collisions */
-const STABLE = flag('--stable-names', null) != null; // pass --stable-names to enable
+/**
+ * Whether to produce stable hash-based names instead of incrementing indices.
+ * Guarded via the `--stable-names` CLI flag.
+ * @type {boolean}
+ */
+const STABLE = flag('--stable-names', null) != null;
 
+/**
+ * Generate a hashed CSS custom property name for a literal value.
+ * Uses the first eight characters of an MD5 digest to minimise collisions.
+ *
+ * @param {*} lit Value to hash into the name.
+ * @param {string} prefix Prefix to prepend to the generated variable name.
+ * @returns {string} Deterministic CSS variable name.
+ */
 function litHash(lit, prefix) {
   const h = crypto.createHash('md5').update(String(lit)).digest('hex').slice(0, 8);
   return `--${prefix}-${h}`;
 }
+
+/**
+ * Create a factory that returns unique CSS variable names.
+ * When the `--stable-names` flag is enabled the factory hashes each literal,
+ * otherwise incremental numbering is used. Collisions are resolved by
+ * appending an incrementing suffix.
+ *
+ * @param {string} prefix Prefix for all generated names.
+ * @returns {(lit: any, i: number) => string} Function producing unique names.
+ */
 function makeNameFactory(prefix) {
   const used = new Set();
   return (lit, i) => {
@@ -150,6 +172,13 @@ function makeNameFactory(prefix) {
   };
 }
 
+/**
+ * Retrieve a command line flag's value.
+ *
+ * @param {string} name Flag name to search for.
+ * @param {string|null} def Default value when the flag is missing.
+ * @returns {string|null} The flag value or the provided default.
+ */
 function flag(name, def) {
   const i = args.indexOf(name);
   return i !== -1 ? args[i + 1] : def;
@@ -887,10 +916,30 @@ if (manifestFile) console.log(`Manifest > ${path.relative(process.cwd(), manifes
 /* ===============================================================
    HELPERS
 =============================================================== */
+
+/**
+ * Replace every occurrence of `needle` within `hay`.
+ * Special characters in `needle` are escaped so the replacement is literal.
+ *
+ * @param {string} hay Source string to operate on.
+ * @param {string} needle Substring to search for.
+ * @param {string} replacement Replacement text for each occurrence.
+ * @returns {string} String with all matches replaced.
+ */
 function replaceAll(hay, needle, replacement) {
   const safe = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return hay.replace(new RegExp(safe, 'g'), replacement);
 }
+
+/**
+ * Rewrite every property value in a CSS source string.
+ * The `transform` callback receives the property name and value and should
+ * return the new value. Properties not matched remain untouched.
+ *
+ * @param {string} source Raw CSS text.
+ * @param {(prop: string, value: string) => string} transform Transformer function.
+ * @returns {string} CSS with transformed declarations.
+ */
 function rewriteByProp(source, transform) {
   return source.replace(RULE_RE, (full, sel, decls) => {
     const newDecls = decls.replace(PROP_RE, (m, prop, val) => {
@@ -900,6 +949,15 @@ function rewriteByProp(source, transform) {
     return `${sel}{${newDecls}}`;
   });
 }
+
+/**
+ * Choose the highest-scoring candidate from a list.
+ *
+ * @param {Array<any>} cands Candidate values.
+ * @param {(cand: any) => number} scoreFn Function returning a numeric score.
+ * @param {Set<any>} [markUsed] Optional set that records the chosen candidate.
+ * @returns {any|null} Best candidate or `null` when the list is empty.
+ */
 function pickBest(cands, scoreFn, markUsed) {
   if (!cands.length) return null;
   const ranked = cands.map((c) => ({ c, s: scoreFn(c) })).sort((a, b) => b.s - a.s);
@@ -907,6 +965,14 @@ function pickBest(cands, scoreFn, markUsed) {
   if (markUsed) markUsed.add(pick);
   return pick;
 }
+
+/**
+ * Resolve a CSS variable name back to its original color literal.
+ * Searches both semantic and numeric color maps.
+ *
+ * @param {string} v CSS variable name, e.g. `--color-1`.
+ * @returns {string|null} Matching color literal or `null` if not found.
+ */
 function varToColor(v) {
   for (const [lit, name] of semanticMap) if (name === v) return lit;
   for (const [lit, name] of numericColorMap) if (name === v) return lit;
@@ -914,10 +980,25 @@ function varToColor(v) {
 }
 
 /* Lengths / units */
+
+/**
+ * Extract all length-like tokens from a CSS value.
+ * Tokens may include px, rem, em, %, vh or vw units.
+ *
+ * @param {string} value CSS value to search.
+ * @returns {string[]} Array of matched length tokens, empty when none are found.
+ */
 function extractLengths(value) {
   return (value.match(LENGTH_TOKEN_RE) || []).map((s) => s.trim());
 }
 
+/**
+ * Convert a length literal to its pixel approximation for ordering purposes.
+ * Supports px, rem, em and percentage/viewport units; unknown units yield 0.
+ *
+ * @param {string} lit Length token to convert.
+ * @returns {number} Pixel value or 0 when the token cannot be parsed.
+ */
 function lenToPx(lit) {
   const m = lit.match(/^(-?\d*\.?\d+)(px|rem|em|%|vh|vw)$/);
   if (!m) return 0;
@@ -939,6 +1020,13 @@ function lenToPx(lit) {
   }
 }
 
+/**
+ * Prefer rem units over pixels when divisible by four for cleaner tokens.
+ * Non-pixel values or values not divisible by four are returned unchanged.
+ *
+ * @param {string} lit Length literal such as `16px`.
+ * @returns {string} Converted value or the original string.
+ */
 function preferRem(lit) {
   const m = lit.match(/^(-?\d*\.?\d+)(px)$/);
   if (!m) return lit;
@@ -950,20 +1038,48 @@ function preferRem(lit) {
   return lit;
 }
 
+/**
+ * Strip trailing zeros and optional decimal points from a number.
+ *
+ * @param {number|string} x Numeric value to clean.
+ * @returns {string} Compact representation without unnecessary zeros.
+ */
 function stripZero(x) {
   return String(x).replace(/\.?0+$/, '');
 }
 
 /* Borders / radii */
+
+/**
+ * Extract the first length token from a border or outline shorthand value.
+ *
+ * @param {string} val CSS value to inspect.
+ * @returns {string|null} Matched length token or `null` if none is present.
+ */
 function extractBorderWidth(val) {
   const m = val.match(LENGTH_TOKEN_RE);
   return m ? m[0] : null;
 }
+
+/**
+ * Normalize a border-radius declaration into discrete tokens.
+ * Currently returns the trimmed value as a single-element array.
+ *
+ * @param {string} val Raw radius value.
+ * @returns {string[]} Array containing the normalized radius string.
+ */
 function extractRadiusTokens(val) {
   return [val.trim()];
 }
 
 /* Motion */
+
+/**
+ * Extract all duration expressions from a CSS value.
+ *
+ * @param {string} val CSS value containing durations.
+ * @returns {{str:string, ms:number}[]} Array with the raw string and milliseconds.
+ */
 function extractDurations(val) {
   const DUR_RE = /-?\d*\.?\d+(ms|s)\b/g;
   const out = [];
@@ -974,21 +1090,50 @@ function extractDurations(val) {
   }
   return out;
 }
+
+/**
+ * Extract timing function names or definitions from a value.
+ *
+ * @param {string} val CSS value that may contain easing functions.
+ * @returns {string[]} Array of easing functions, empty if none.
+ */
 function extractEasings(val) {
   const EASE_RE =
     /(?:linear|ease|ease-in|ease-out|ease-in-out|step-start|step-end|steps\([^)]*\)|cubic-bezier\([^)]*\))/g;
   return val.match(EASE_RE) || [];
 }
+
+/**
+ * Convert a duration string to milliseconds.
+ *
+ * @param {string} str Duration such as `200ms` or `0.2s`.
+ * @returns {number} Duration in milliseconds.
+ */
 function toMs(str) {
   const n = parseFloat(str);
   return /ms$/.test(str) ? n : n * 1000;
 }
+
+/**
+ * Normalize a duration string to seconds with millisecond precision.
+ *
+ * @param {string} str Duration value to normalize.
+ * @returns {string} Canonical seconds representation, e.g. `0.2s`.
+ */
 function normalizeDuration(str) {
   const s = toMs(str) / 1000;
   return `${stripZero(+s.toFixed(3))}s`;
 }
 
 /* Color conversions / transforms */
+
+/**
+ * Parse a CSS color token and return its RGBA components.
+ * Supports hex, rgb[a] and hsl[a] forms. Unknown formats produce opaque black.
+ *
+ * @param {string} token Color literal to parse.
+ * @returns {{r:number,g:number,b:number,a:number}} RGBA representation.
+ */
 function toRgba(token) {
   token = token.trim().toLowerCase();
   if (token.startsWith('#')) return hexToRgba(token);
@@ -996,6 +1141,14 @@ function toRgba(token) {
   if (token.startsWith('hsl')) return hslStrToRgba(token);
   return { r: 0, g: 0, b: 0, a: 1 };
 }
+
+/**
+ * Convert a hexadecimal color string into RGBA components.
+ * Handles 3/4/6/8 digit forms; invalid strings fall back to black.
+ *
+ * @param {string} hex Hex color starting with `#`.
+ * @returns {{r:number,g:number,b:number,a:number}} RGBA object.
+ */
 function hexToRgba(hex) {
   let h = hex.replace('#', '');
   if (h.length === 3 || h.length === 4) {
@@ -1014,6 +1167,14 @@ function hexToRgba(hex) {
   }
   return { r: 0, g: 0, b: 0, a: 1 };
 }
+
+/**
+ * Parse an `rgb()`/`rgba()` string into RGBA components.
+ * Percentage values are converted to 0–255; alpha defaults to 1.
+ *
+ * @param {string} str CSS rgb/rgba string.
+ * @returns {{r:number,g:number,b:number,a:number}} Clamped RGBA values.
+ */
 function rgbStrToRgba(str) {
   const parts = str
     .slice(str.indexOf('(') + 1, str.lastIndexOf(')'))
@@ -1026,6 +1187,13 @@ function rgbStrToRgba(str) {
   const a = parts[3] != null ? parseFloat(parts[3]) : 1;
   return { r: clamp(r, 0, 255), g: clamp(g, 0, 255), b: clamp(b, 0, 255), a: clamp(a, 0, 1) };
 }
+
+/**
+ * Parse an `hsl()`/`hsla()` string and convert to RGBA.
+ *
+ * @param {string} str CSS hsl/hsla string.
+ * @returns {{r:number,g:number,b:number,a:number}} RGBA color.
+ */
 function hslStrToRgba(str) {
   const parts = str
     .slice(str.indexOf('(') + 1, str.lastIndexOf(')'))
@@ -1037,6 +1205,14 @@ function hslStrToRgba(str) {
   const a = parts[3] != null ? parseFloat(parts[3]) : 1;
   return hslToRgba({ h, s, l, a });
 }
+
+/**
+ * Serialise an RGBA object to a CSS color string.
+ * Hex notation is used when alpha is 1; otherwise `rgba()` is emitted.
+ *
+ * @param {{r:number,g:number,b:number,a:number}} rgba RGBA color.
+ * @returns {string} CSS color string.
+ */
 function rgbaToCss({ r, g, b, a }) {
   if (a === 1) {
     const hex = (n) => n.toString(16).padStart(2, '0');
@@ -1044,13 +1220,37 @@ function rgbaToCss({ r, g, b, a }) {
   }
   return `rgba(${r}, ${g}, ${b}, ${round(a, 4)})`;
 }
+
+/**
+ * Round a number to a fixed precision.
+ *
+ * @param {number} n Number to round.
+ * @param {number} [p=3] Number of decimal places.
+ * @returns {number} Rounded number.
+ */
 function round(n, p = 3) {
   const f = 10 ** p;
   return Math.round(n * f) / f;
 }
+
+/**
+ * Clamp a value between two bounds.
+ *
+ * @param {number} v Value to clamp.
+ * @param {number} lo Lower bound.
+ * @param {number} hi Upper bound.
+ * @returns {number} Clamped value.
+ */
 function clamp(v, lo, hi) {
   return Math.min(hi, Math.max(lo, v));
 }
+
+/**
+ * Convert an RGBA color to HSL while preserving alpha.
+ *
+ * @param {{r:number,g:number,b:number,a:number}} param0 RGBA color.
+ * @returns {{h:number,s:number,l:number,a:number}} HSL representation.
+ */
 function rgbaToHsl({ r, g, b, a }) {
   let R = r / 255,
     G = g / 255,
@@ -1078,6 +1278,14 @@ function rgbaToHsl({ r, g, b, a }) {
   }
   return { h, s, l, a };
 }
+
+/**
+ * Convert HSL values to an RGBA color.
+ * Hue may wrap; saturation and lightness are clamped to 0–1.
+ *
+ * @param {{h:number,s:number,l:number,a?:number}} param0 HSL color.
+ * @returns {{r:number,g:number,b:number,a:number}} RGBA color.
+ */
 function hslToRgba({ h, s, l, a = 1 }) {
   h = ((h % 360) + 360) % 360;
   s = clamp(s, 0, 1);
@@ -1098,6 +1306,13 @@ function hslToRgba({ h, s, l, a = 1 }) {
   });
   return { r: Math.round(t[0] * 255), g: Math.round(t[1] * 255), b: Math.round(t[2] * 255), a };
 }
+
+/**
+ * Compute the relative luminance of an RGB color per WCAG 2.0.
+ *
+ * @param {{r:number,g:number,b:number}} param0 RGB color.
+ * @returns {number} Relative luminance from 0 to 1.
+ */
 function relLuminance({ r, g, b }) {
   const nl = (c) => {
     c /= 255;
@@ -1110,6 +1325,14 @@ function relLuminance({ r, g, b }) {
 }
 
 // minimal OKLCH tone-like dark transform (fallback approximation)
+
+/**
+ * Darken a color using a tone-based approximation when OKLCH is unavailable.
+ * Reduces lightness and slightly desaturates the color.
+ *
+ * @param {{r:number,g:number,b:number,a:number}} rgba Source color.
+ * @returns {{r:number,g:number,b:number,a:number}} Darkened color.
+ */
 function toDarkTone(rgba) {
   // use HSL fallback, darken while reducing saturation
   const hsl = rgbaToHsl(rgba);
@@ -1121,6 +1344,13 @@ function toDarkTone(rgba) {
   return clampRgb(hslToRgba(out));
 }
 
+/**
+ * Transform a color for dark mode using one of several algorithms.
+ *
+ * @param {{r:number,g:number,b:number,a:number}} rgba Source color.
+ * @param {string} mode `invert`, `tone`, or default lightness flip.
+ * @returns {{r:number,g:number,b:number,a:number}} Transformed color.
+ */
 function toDark(rgba, mode) {
   if (mode === 'invert') return clampRgb(invertRgb(rgba));
   if (mode === 'tone') return toDarkTone(rgba); // NEW algorithm
@@ -1133,9 +1363,22 @@ function toDark(rgba, mode) {
   return clampRgb(hslToRgba(out));
 }
 
+/**
+ * Invert an RGB color while staying within a visible range.
+ *
+ * @param {{r:number,g:number,b:number,a:number}} param0 RGBA color.
+ * @returns {{r:number,g:number,b:number,a:number}} Inverted color.
+ */
 function invertRgb({ r, g, b, a }) {
   return { r: clamp(255 - r, 10, 245), g: clamp(255 - g, 10, 245), b: clamp(255 - b, 10, 245), a };
 }
+
+/**
+ * Clamp and round RGBA channels to valid ranges.
+ *
+ * @param {{r:number,g:number,b:number,a:number}} param0 RGBA color.
+ * @returns {{r:number,g:number,b:number,a:number}} Clamped color.
+ */
 function clampRgb({ r, g, b, a }) {
   return {
     r: clamp(Math.round(r), 0, 255),
@@ -1144,6 +1387,14 @@ function clampRgb({ r, g, b, a }) {
     a: clamp(a, 0, 1),
   };
 }
+
+/**
+ * Compute the distance between two HSL colors using Euclidean metrics.
+ *
+ * @param {{h:number,s:number,l:number}} a First color.
+ * @param {{h:number,s:number,l:number}} b Second color.
+ * @returns {number} Distance value where lower means more similar.
+ */
 function hslDist(a, b) {
   const dh = Math.abs(a.h - b.h) / 360,
     ds = Math.abs(a.s - b.s),
@@ -1156,7 +1407,14 @@ function hslDist(a, b) {
    - Uses global ROOT_SIZE (rem) and CONTEXT_SIZE (em)
 ---------------------------------------------------------------- */
 
-/** Parse "--convert" like "px>rem,em>px" > [{from:'px', to:'rem'}, ...] */
+/**
+ * Parse the `--convert` CLI specification.
+ * Accepts comma-separated pairs like `"px>rem,em>px"` and returns
+ * an array of validated conversion mappings.
+ *
+ * @param {string|null} spec Conversion specification or `null`.
+ * @returns {Array<{from:string,to:string}>} Array of conversion pairs.
+ */
 function parseConvert(spec) {
   if (!spec) return [];
   return spec
@@ -1172,7 +1430,16 @@ function parseConvert(spec) {
     .filter(Boolean);
 }
 
-/** Convert a single numeric token with unit among px/rem/em */
+/**
+ * Convert a single length token between px, rem and em.
+ * Conversion occurs only when the token's unit matches the `from` unit.
+ *
+ * @param {string} token Length token such as `"1.5rem"`.
+ * @param {string} from Source unit.
+ * @param {string} to Target unit.
+ * @param {{rootPx?:number, contextPx?:number}} param3 Conversion options.
+ * @returns {string} Converted token or original when unmatched.
+ */
 function convertLengthUnitToken(token, from, to, { rootPx = 16, contextPx = 16 }) {
   const m = token.match(/^(-?\d*\.?\d+)(px|rem|em)$/i);
   if (!m) return token;
@@ -1197,7 +1464,15 @@ function convertLengthUnitToken(token, from, to, { rootPx = 16, contextPx = 16 }
   return prettifyUnit(out, to);
 }
 
-/** Convert all applicable tokens in a CSS value string for a set of pairs */
+/**
+ * Convert all applicable length tokens within a single CSS value.
+ * Also processes math functions like `calc()` recursively.
+ *
+ * @param {string} value CSS value string.
+ * @param {Array<{from:string,to:string}>} pairs Conversion pairs.
+ * @param {{rootPx?:number, contextPx?:number}} opts Conversion options.
+ * @returns {string} Value with units converted where applicable.
+ */
 function convertUnitsInValue(value, pairs, opts) {
   const withFns = convertUnitsInFunctions(value, pairs, opts);
   // only touch px|rem|em tokens (avoid %, vh, vw)
@@ -1208,7 +1483,15 @@ function convertUnitsInValue(value, pairs, opts) {
   });
 }
 
-/** Convert units across the whole CSS source */
+/**
+ * Apply unit conversion across an entire CSS source string.
+ * Each rule uses its font-size context to resolve `em` conversions.
+ *
+ * @param {string} source CSS source code.
+ * @param {Array<{from:string,to:string}>} pairs Conversion pairs.
+ * @param {{rootPx?:number, contextPx?:number}} [opts] Global conversion options.
+ * @returns {string} CSS with converted units.
+ */
 function convertCssUnits(source, pairs, { rootPx = 16, contextPx = 16 } = {}) {
   if (!pairs.length) return source;
   const fsMap = buildFontSizeMap(source);
@@ -1222,14 +1505,26 @@ function convertCssUnits(source, pairs, { rootPx = 16, contextPx = 16 } = {}) {
   });
 }
 
-/** Format with minimal trailing zeros */
+/**
+ * Format a numeric value with a unit, stripping superfluous zeros.
+ *
+ * @param {number} n Numeric value.
+ * @param {string} unit Unit to append (e.g., `px`).
+ * @returns {string} Formatted string.
+ */
 function prettifyUnit(n, unit) {
   // keep up to 4 decimals, strip trailing zeros/decimal
   const num = stripZero(+n.toFixed(4));
   return `${num}${unit}`;
 }
 
-// parse length-like or unitless where applicable without throwing
+/**
+ * Leniently convert a length literal to pixels.
+ * Supports px/rem/em and falls back to 0 for unsupported or unitless values.
+ *
+ * @param {string|number} lit Length literal.
+ * @returns {number} Pixel value or 0 when invalid.
+ */
 function lenToPxSafe(lit) {
   // supports px/rem/em; falls back: unitless/others => NaN -> treat as 0
   const m = String(lit)
@@ -1244,6 +1539,14 @@ function lenToPxSafe(lit) {
   return 0;
 }
 
+/**
+ * Normalize line-height values to a numeric representation.
+ * Unitless values are returned as numbers, lengths are approximated in px,
+ * and the keyword `normal` falls back to 1.2.
+ *
+ * @param {string|number} v Line-height value.
+ * @returns {number} Numeric line-height or pixel approximation.
+ */
 function lineHeightToFloat(v) {
   // unitless -> number, length -> px (approx), keyword "normal" -> 1.2 (conventional fallback)
   const s = String(v).trim().toLowerCase();
@@ -1254,6 +1557,13 @@ function lineHeightToFloat(v) {
   return isNaN(px) ? 0 : px;
 }
 
+/**
+ * Normalize font-weight values to their numeric equivalents.
+ * Supports numeric strings and keywords; unknown values map to 0.
+ *
+ * @param {string|number} v Font-weight value.
+ * @returns {number} Numeric weight.
+ */
 function fontWeightToNum(v) {
   const s = String(v).trim().toLowerCase();
   if (/^\d{3}$/.test(s)) return parseInt(s, 10);
@@ -1263,7 +1573,14 @@ function fontWeightToNum(v) {
   return 0;
 }
 
-// parse + convert inside calc()/clamp()/min()/max()
+/**
+ * Recursively convert length units inside mathematical CSS functions.
+ *
+ * @param {string} value CSS value potentially containing functions.
+ * @param {Array<{from:string,to:string}>} pairs Conversion pairs.
+ * @param {{rootPx?:number, contextPx?:number}} opts Conversion options.
+ * @returns {string} Converted value string.
+ */
 function convertUnitsInFunctions(value, pairs, opts) {
   // recursively replace length tokens inside math functions
   const FN_RE = /(calc|min|max|clamp)\(\s*([^()]*|\((?:[^()]*|\([^()]*\))*\))*\)/gi;
@@ -1278,7 +1595,13 @@ function convertUnitsInFunctions(value, pairs, opts) {
   });
 }
 
-// build a quick font-size map before conversion (from original CSS)
+/**
+ * Build a map of selectors to their declared font-size in pixels.
+ * Used to determine context when converting `em` units.
+ *
+ * @param {string} source CSS source prior to conversion.
+ * @returns {Map<string, number>} Map of selector -> pixel font-size.
+ */
 function buildFontSizeMap(source) {
   const map = new Map(); // selector -> px
   source.replace(RULE_RE, (full, sel, decls) => {
@@ -1295,6 +1618,13 @@ function buildFontSizeMap(source) {
   return map;
 }
 
+/**
+ * Lightly parse the `font` shorthand to extract size, line-height and weight.
+ *
+ * @param {string} v Font shorthand value.
+ * @returns {{fs:string|null, lh:string|null, fw:string|null, ls:string|null}}
+ *   Parsed components (`fs` font-size, `lh` line-height, `fw` weight, `ls` reserved).
+ */
 function parseFontShorthand(v) {
   // very light parse: look for font-size[/line-height] and font-weight keywords/numbers
   const sizePart = v.match(/(^|\s)(-?\d*\.?\d+(px|rem|em|%)(?:\s*\/\s*[^ \t/;]+)?)/i);
@@ -1315,7 +1645,13 @@ function parseFontShorthand(v) {
   return { fs, lh, fw, ls };
 }
 
-// normalize family list spacing/commas for stable matching
+/**
+ * Normalize a comma-separated `font-family` list for stable comparison.
+ * Collapses whitespace and ensures a single space after commas.
+ *
+ * @param {string} s Raw font-family list.
+ * @returns {string} Normalized list.
+ */
 function normalizeFontFamilyList(s) {
   return String(s)
     .replace(/\s*,\s*/g, ',') // collapse comma spaces
@@ -1324,7 +1660,13 @@ function normalizeFontFamilyList(s) {
     .replace(/,/g, ', '); // pretty: one space after comma
 }
 
-// extend shorthand parser to also extract the family tail
+/**
+ * Parse the `font` shorthand and also capture the family list.
+ *
+ * @param {string} v Shorthand font value.
+ * @returns {{fs:string|null, lh:string|null, fw:string|null, family:string|null}}
+ *   Extracted components including the remaining family string.
+ */
 function parseFontShorthandWithFamily(v) {
   // match the first font-size [ / line-height ] and capture the tail as family
   const m = /(-?\d*\.?\d+(?:px|rem|em|%))(?:\s*\/\s*([^\s/;]+))?(.*)$/i.exec(v);
@@ -1342,11 +1684,24 @@ function parseFontShorthandWithFamily(v) {
   return { fs, lh, fw, family };
 }
 
-// escape for regex
+/**
+ * Escape a string for safe use inside a regular expression.
+ *
+ * @param {string} s Raw string.
+ * @returns {string} Escaped string.
+ */
 function escRE(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Safely replace literal substrings using a map of replacements.
+ * Longer keys are replaced first to avoid partial matches.
+ *
+ * @param {string} val Source string.
+ * @param {Map<string,string>} map Literal -> replacement map.
+ * @returns {string} String with replacements applied.
+ */
 function safeReplaceMap(val, map) {
   const pairs = [...map.entries()].sort((a, b) => b[0].length - a[0].length);
   for (const [lit, vname] of pairs) {
@@ -1356,6 +1711,12 @@ function safeReplaceMap(val, map) {
   return val;
 }
 
+/**
+ * Normalize a border-radius value by collapsing whitespace and spacing around `/`.
+ *
+ * @param {string} v Raw radius value.
+ * @returns {string} Normalized radius string.
+ */
 function normalizeRadius(v) {
   return v
     .replace(/\s*\/\s*/g, ' / ')
@@ -1363,6 +1724,12 @@ function normalizeRadius(v) {
     .trim();
 }
 
+/**
+ * Determine if a string is a CSS-wide keyword such as `inherit` or `initial`.
+ *
+ * @param {string} s Value to test.
+ * @returns {boolean} True if the value is a CSS-wide keyword.
+ */
 function isCssWideKeyword(s) {
   return /^(inherit|initial|unset|revert|revert-layer)$/i.test(String(s).trim());
 }
