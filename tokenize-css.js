@@ -5,7 +5,7 @@
      • Colors (semantic + numbered) + dark scheme
      • Spacing scale (from margin/padding/gap)
      • Border widths
-     • Border radii
+     • Border radius
      • Shadows
      • Motion (durations, easing)
    Optionally:
