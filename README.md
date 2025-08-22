@@ -10,7 +10,7 @@ It can generate tokens for:
 - **Motion** (durations + easing).
 - **Typography** (**font-family, font-size, line-height, font-weight, letter-spacing**).
 
-It also supports **px↔rem↔em unit conversion** on the input **before analysis** so your tokens and rewrites reflect your preferred units.
+It also supports **numeric unit conversion** (`px`, `rem`, `em`, `%`, `vh`, `vw`, `ch`) on the input **before analysis** so your tokens and rewrites reflect your preferred units.
 
 ---
 
@@ -93,9 +93,13 @@ node tokenize-css.js input.css
   [--prefix-line-height lh]
   [--prefix-letter-spacing ls]
   [--prefix-font-weight fw]
-  [--convert "px>rem,em>px,rem>em"]
+  [--convert "px>rem,vh>px,%>px"]
   [--root-size 16]
   [--context-size 16]
+	[--viewport-width 100]
+  [--viewport-height 100]
+  [--percent-base 100]
+  [--ch-width 1]
   [--convert-out converted.css]
   [--stable-names] # use content hashes instead of sequence numbers
 ```
@@ -114,9 +118,12 @@ node tokenize-css.js input.css
   - `invert`: simple RGB invert, clamped.
   - `tone`: darker tone with light desaturation (HSL-based OKLCH-like approximation).
 
-- `--convert` — run numeric unit conversions first (supports `px`, `rem`, `em` only).
+- `--convert` — run numeric unit conversions first (supports `px`, `rem`, `em`, `%`, `vh`, `vw`, `ch`).
 - `--root-size` — pixels per `1rem` (default 16).
 - `--context-size` — fallback pixels per `1em` (default 16). A lightweight pre-scan picks up `font-size` on selectors to locally refine em context during conversion.
+- `--viewport-width`/`--viewport-height` — pixels per `100vw`/`100vh` (default 100).
+- `--percent-base` — pixels per `100%` when converting `%` (default 100).
+- `--ch-width` — pixels per `1ch` (default 1).
 - `--convert-out` — write the converted CSS to a file even when not rewriting.
 - `--prefix-\*` — customize variable names.
 - `--stable-names` — produce hash-based names that don’t shift when new tokens are discovered.
@@ -205,10 +212,12 @@ When `--rewrite` is provided, your CSS is rewritten to use `var(...)`:
 
 Unit conversion runs before tokenization and rewrite so your tokens reflect the desired units.
 
-- Supported conversions: `px`, `rem`, `em`.
+- Supported conversions: `px`, `rem`, `em`, `%`, `vh`, `vw`, `ch`.
 - Handles tokens inside `calc()`, `clamp()`, `min()`, `max()` recursively.
 - Uses `--root-size` for `rem`.
 - For `em`, a light pre-scan of `font-size` per selector acts as a local context; otherwise it falls back to `--context-size`.
+- `--viewport-width`/`--viewport-height` provide the pixel bases for `100vw`/`100vh` (default 100).
+- `--percent-base` sets pixels for `100%` (default 100); `--ch-width` sets pixels per `1ch` (default 1).
 
 Examples:
 
@@ -218,6 +227,9 @@ node tokenize-css.js app.css --convert "px>rem" --root-size 16 --out tokens.css
 
 # chain conversions px>rem, rem>em
 node tokenize-css.js app.css --convert "px>rem,rem>em" --context-size 16 --rewrite out.css
+
+# convert vh > px using a 900px viewport height
+node tokenize-css.js app.css --convert "vh>px" --viewport-height 900 --convert-out app.converted.css
 ```
 
 ---
@@ -333,7 +345,7 @@ node tokenize-css.js app.css \
 
 - Parser is regex-based for speed; it doesn’t build a full CSS AST.
 - Radius/shadows replacements require normalized forms to match; this tool normalizes common whitespace forms but not every edge case.
-- Only `px`, `rem`, `em` are converted numerically; other units pass through.
+- Only `px`, `rem`, `em`, `%`, `vh`, `vw`, `ch` are converted numerically; other units pass through.
 - `font` shorthand parsing is intentionally conservative—exotic shorthands may not be fully recognized.
 - Token rewrite is literal-based; if a value is computed by custom properties or complex functions, a direct match may not be possible.
 

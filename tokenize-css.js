@@ -9,7 +9,7 @@
      • Shadows
      • Motion (durations, easing)
    Optionally:
-     • Converts units numerically (px↔rem↔em) BEFORE analysis/rewrite
+     • Converts units numerically (px<>rem<>em) BEFORE analysis/rewrite
      • Rewrites CSS to use the generated tokens
      • Emits a JSON manifest
 
@@ -33,9 +33,13 @@
        [--prefix-letter-spacing ls]
        [--prefix-font-weight fw]
        [--prefix-font-family ff]
+       [--viewport-width 100]                // px per 100vw (default 100)
+       [--viewport-height 100]               // px per 100vh (default 100)
+       [--percent-base 100]                  // px per 100% (default 100)
+       [--ch-width 1]                        // px per 1ch (default 1)
    Notes:
      • Unit conversion runs FIRST on the loaded CSS, so tokens & rewrites reflect converted values.
-     • Supported convertible units: px, rem, em (others are left untouched).
+     • Supported convertible units: px, rem, em, %, vh, vw, ch (others are left untouched).
      • `--context-size` is a single global fallback for `em` (no per-selector cascade resolution).
      • If `--convert-out` is provided and `--rewrite` is omitted, the converted CSS is saved to that file.
 
@@ -97,7 +101,8 @@ if (!args[0]) {
       '[--prefix-duration duration] [--prefix-ease ease] ' +
       '[--prefix-font-family ff] [--prefix-font-size fs] ' +
       '[--prefix-line-height lh] [--prefix-letter-spacing ls] [--prefix-font-weight fw] ' +
-      '[--convert "px>rem,em>px,rem>em"] [--root-size 16] [--context-size 16] ' +
+      '[--convert "px>rem,vh>px,%>px"] [--root-size 16] [--context-size 16] ' +
+      '[--viewport-width 100] [--viewport-height 100] [--percent-base 100] [--ch-width 1] ' +
       '[--convert-out converted.css]'
   );
   process.exit(1);
@@ -123,6 +128,10 @@ const convertSpec = flag('--convert', null); // e.g. "px>rem,em>px"
 const convertOut = flag('--convert-out', null); // optional explicit output when only converting
 const ROOT_SIZE = parseFloat(flag('--root-size', '16')); // px per 1rem
 const CONTEXT_SIZE = parseFloat(flag('--context-size', '16')); // px per 1em (global fallback)
+const VIEWPORT_WIDTH = parseFloat(flag('--viewport-width', '100')); // px per 100vw
+const VIEWPORT_HEIGHT = parseFloat(flag('--viewport-height', '100')); // px per 100vh
+const PERCENT_BASE = parseFloat(flag('--percent-base', '100')); // px per 100%
+const CH_WIDTH = parseFloat(flag('--ch-width', '1')); // px per 1ch
 
 const PREFIX_FF = flag('--prefix-font-family', 'ff');
 const PREFIX_FS = flag('--prefix-font-size', 'fs'); // --fs-1, --fs-2, ...
@@ -193,7 +202,14 @@ let css = fs.readFileSync(inFile, 'utf8');
 // 2) optional unit conversion (px<>rem<>em) before analysis
 const convertPairs = parseConvert(convertSpec);
 if (convertPairs.length) {
-  css = convertCssUnits(css, convertPairs, { rootPx: ROOT_SIZE, contextPx: CONTEXT_SIZE });
+  css = convertCssUnits(css, convertPairs, {
+    rootPx: ROOT_SIZE,
+    contextPx: CONTEXT_SIZE,
+    vwPx: VIEWPORT_WIDTH,
+    vhPx: VIEWPORT_HEIGHT,
+    percentBase: PERCENT_BASE,
+    chPx: CH_WIDTH,
+  });
   if (convertOut && !rewriteFile) {
     fs.writeFileSync(convertOut, css, 'utf8');
     console.log(`Converted CSS > ${path.relative(process.cwd(), convertOut)}`);
@@ -1045,7 +1061,9 @@ function preferRem(lit) {
  * @returns {string} Compact representation without unnecessary zeros.
  */
 function stripZero(x) {
-  return String(x).replace(/\.?0+$/, '');
+  return String(x)
+    .replace(/(\.\d*?[1-9])0+$/, '$1')
+    .replace(/\.0+$/, '');
 }
 
 /* Borders / radii */
@@ -1410,7 +1428,8 @@ function hslDist(a, b) {
 /**
  * Parse the `--convert` CLI specification.
  * Accepts comma-separated pairs like `"px>rem,em>px"` and returns
- * an array of validated conversion mappings.
+ * an array of validated conversion mappings. Supports px, rem, em,
+ * vh, vw, %, and ch units.
  *
  * @param {string|null} spec Conversion specification or `null`.
  * @returns {Array<{from:string,to:string}>} Array of conversion pairs.
@@ -1423,7 +1442,7 @@ function parseConvert(spec) {
     .filter(Boolean)
     .map((pair) => {
       const [from, to] = pair.split('>').map((x) => x.trim().toLowerCase());
-      const ok = ['px', 'rem', 'em'];
+      const ok = ['px', 'rem', 'em', 'vh', 'vw', '%', 'ch'];
       if (!ok.includes(from) || !ok.includes(to) || from === to) return null;
       return { from, to };
     })
@@ -1440,8 +1459,13 @@ function parseConvert(spec) {
  * @param {{rootPx?:number, contextPx?:number}} param3 Conversion options.
  * @returns {string} Converted token or original when unmatched.
  */
-function convertLengthUnitToken(token, from, to, { rootPx = 16, contextPx = 16 }) {
-  const m = token.match(/^(-?\d*\.?\d+)(px|rem|em)$/i);
+function convertLengthUnitToken(
+  token,
+  from,
+  to,
+  { rootPx = 16, contextPx = 16, vwPx = 100, vhPx = 100, percentBase = 100, chPx = 1 }
+) {
+  const m = token.match(/^(-?\d*\.?\d+)(px|rem|em|vh|vw|%|ch)$/i);
   if (!m) return token;
   let val = parseFloat(m[1]);
   const unit = m[2].toLowerCase();
@@ -1451,15 +1475,59 @@ function convertLengthUnitToken(token, from, to, { rootPx = 16, contextPx = 16 }
 
   // normalize to px
   let px;
-  if (from === 'px') px = val;
-  else if (from === 'rem') px = val * rootPx;
-  else if (from === 'em') px = val * contextPx;
+  switch (from) {
+    case 'px':
+      px = val;
+      break;
+    case 'rem':
+      px = val * rootPx;
+      break;
+    case 'em':
+      px = val * contextPx;
+      break;
+    case 'vh':
+      px = (val * vhPx) / 100;
+      break;
+    case 'vw':
+      px = (val * vwPx) / 100;
+      break;
+    case '%':
+      px = (val * percentBase) / 100;
+      break;
+    case 'ch':
+      px = val * chPx;
+      break;
+    default:
+      return token;
+  }
 
   // px > target
   let out;
-  if (to === 'px') out = px;
-  else if (to === 'rem') out = px / rootPx;
-  else if (to === 'em') out = px / contextPx;
+  switch (to) {
+    case 'px':
+      out = px;
+      break;
+    case 'rem':
+      out = px / rootPx;
+      break;
+    case 'em':
+      out = px / contextPx;
+      break;
+    case 'vh':
+      out = (px / vhPx) * 100;
+      break;
+    case 'vw':
+      out = (px / vwPx) * 100;
+      break;
+    case '%':
+      out = (px / percentBase) * 100;
+      break;
+    case 'ch':
+      out = px / chPx;
+      break;
+    default:
+      return token;
+  }
 
   return prettifyUnit(out, to);
 }
@@ -1475,8 +1543,8 @@ function convertLengthUnitToken(token, from, to, { rootPx = 16, contextPx = 16 }
  */
 function convertUnitsInValue(value, pairs, opts) {
   const withFns = convertUnitsInFunctions(value, pairs, opts);
-  // only touch px|rem|em tokens (avoid %, vh, vw)
-  return withFns.replace(/(-?\d*\.?\d+)(px|rem|em)\b/gi, (m) => {
+  // replace convertible length tokens
+  return withFns.replace(/(-?\d*\.?\d+)(px|rem|em|vh|vw|%|ch)\b/gi, (m) => {
     let out = m;
     for (const { from, to } of pairs) out = convertLengthUnitToken(out, from, to, opts);
     return out;
@@ -1492,13 +1560,24 @@ function convertUnitsInValue(value, pairs, opts) {
  * @param {{rootPx?:number, contextPx?:number}} [opts] Global conversion options.
  * @returns {string} CSS with converted units.
  */
-function convertCssUnits(source, pairs, { rootPx = 16, contextPx = 16 } = {}) {
+function convertCssUnits(
+  source,
+  pairs,
+  { rootPx = 16, contextPx = 16, vwPx = 100, vhPx = 100, percentBase = 100, chPx = 1 } = {}
+) {
   if (!pairs.length) return source;
   const fsMap = buildFontSizeMap(source);
   return source.replace(RULE_RE, (full, sel, decls) => {
     const ctxPx = fsMap.get(sel.trim()) || contextPx;
     const newDecls = decls.replace(PROP_RE, (m, prop, val) => {
-      const v = convertUnitsInValue(val, pairs, { rootPx, contextPx: ctxPx });
+      const v = convertUnitsInValue(val, pairs, {
+        rootPx,
+        contextPx: ctxPx,
+        vwPx,
+        vhPx,
+        percentBase,
+        chPx,
+      });
       return `${prop}: ${v};`;
     });
     return `${sel}{${newDecls}}`;
@@ -1586,7 +1665,7 @@ function convertUnitsInFunctions(value, pairs, opts) {
   const FN_RE = /(calc|min|max|clamp)\(\s*([^()]*|\((?:[^()]*|\([^()]*\))*\))*\)/gi;
   return value.replace(FN_RE, (fn) => {
     // convert primitives inside the function string
-    const inner = fn.replace(/(-?\d*\.?\d+)(px|rem|em)\b/gi, (m) => {
+    const inner = fn.replace(/(-?\d*\.?\d+)(px|rem|em|vh|vw|%|ch)\b/gi, (m) => {
       let out = m;
       for (const { from, to } of pairs) out = convertLengthUnitToken(out, from, to, opts);
       return out;
