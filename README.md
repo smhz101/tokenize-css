@@ -93,6 +93,7 @@ node tokenize-css.js input.css
   [--prefix-line-height lh]
   [--prefix-letter-spacing ls]
   [--prefix-font-weight fw]
+  [--selector-alias "<selectors>:<alias>[;<selectors>:<alias>]"]
   [--convert "px>rem,vh>px,%>px"]
   [--root-size 16]
   [--context-size 16]
@@ -126,6 +127,7 @@ node tokenize-css.js input.css
 - `--ch-width` — pixels per `1ch` (default 1).
 - `--convert-out` — write the converted CSS to a file even when not rewriting.
 - `--prefix-\*` — customize variable names.
+- `--selector-alias` — map selectors to semantic aliases (e.g., `h1,h2:heading; body:body`) to override built-in hints.
 - `--stable-names` — produce hash-based names that don’t shift when new tokens are discovered.
 
 ---
@@ -320,6 +322,14 @@ node tokenize-css.js app.css \
   --prefix-font-family typeface \
   --stable-names \
   --out tokens.css --manifest tokens.json
+```
+
+Provide custom selector aliases for typography categories:
+
+```bash
+node tokenize-css.js app.css \
+  --selector-alias "h1,h2:heading; body:body" \
+  --out tokens.css
 ```
 
 Rewrite CSS while preserving tokens in `rem` (convert px>rem first):

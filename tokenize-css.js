@@ -33,6 +33,7 @@
        [--prefix-letter-spacing ls]
        [--prefix-font-weight fw]
        [--prefix-font-family ff]
+       [--selector-alias "<selectors>:<alias>[;<selectors>:<alias>]"]
        [--viewport-width 100]                // px per 100vw (default 100)
        [--viewport-height 100]               // px per 100vh (default 100)
        [--percent-base 100]                  // px per 100% (default 100)
@@ -101,6 +102,7 @@ if (!args[0]) {
       '[--prefix-duration duration] [--prefix-ease ease] ' +
       '[--prefix-font-family ff] [--prefix-font-size fs] ' +
       '[--prefix-line-height lh] [--prefix-letter-spacing ls] [--prefix-font-weight fw] ' +
+      '[--selector-alias "<selectors>:<alias>[;<selectors>:<alias>]"] ' +
       '[--convert "px>rem,vh>px,%>px"] [--root-size 16] [--context-size 16] ' +
       '[--viewport-width 100] [--viewport-height 100] [--percent-base 100] [--ch-width 1] ' +
       '[--convert-out converted.css]'
@@ -138,6 +140,10 @@ const PREFIX_FS = flag('--prefix-font-size', 'fs'); // --fs-1, --fs-2, ...
 const PREFIX_LH = flag('--prefix-line-height', 'lh'); // --lh-1, ...
 const PREFIX_LS = flag('--prefix-letter-spacing', 'ls'); // --ls-1, ...
 const PREFIX_FW = flag('--prefix-font-weight', 'fw'); // --fw-1, ...
+
+// Selector aliases: "h1,h2:heading; body:body" -> {"h1": "heading", ...}
+const selectorAliasSpec = flag('--selector-alias', null);
+const SELECTOR_ALIASES = parseSelectorAlias(selectorAliasSpec);
 
 /**
  * Whether to produce stable hash-based names instead of incrementing indices.
@@ -395,7 +401,17 @@ const isSaturated = (c) => byColor.get(c).sat >= 0.22;
 const lum = (c) => byColor.get(c).lum;
 const count = (c) => byColor.get(c).count;
 const usedInProp = (c, name) => byColor.get(c).props.has(name);
-const usedInSelector = (c, re) => byColor.get(c).selectors.some((s) => re.test(s));
+const usedInSelector = (c, test) => {
+  const sels = byColor.get(c).selectors;
+  if (typeof test === 'string') {
+    return sels.some((s) => {
+      if (selectorAliasesFor(s).has(test)) return true;
+      const re = new RegExp(`\\b${escRE(test)}\\b`);
+      return re.test(s);
+    });
+  }
+  return sels.some((s) => test.test(s));
+};
 const distinct = (a, b) => (a && b ? hslDist(byColor.get(a).hsl, byColor.get(b).hsl) > 0.18 : true);
 
 roles['--color-fg'] =
@@ -406,7 +422,7 @@ roles['--color-fg'] =
       s += (1 - lum(c)) * 2.0;
       s += Math.log1p(count(c)) * 0.4;
       if (usedInProp(c, 'color')) s += 1.0;
-      if (usedInSelector(c, /\bbody\b/)) s += 2.0;
+      if (usedInSelector(c, 'body')) s += 2.0;
       return s;
     }
   ) || pickBest(palette, (c) => 1 - lum(c) + Math.log1p(count(c)) * 0.3);
@@ -418,7 +434,7 @@ roles['--color-bg'] = pickBest(
     s += lum(c) * 2.0;
     s += Math.log1p(count(c)) * 0.3;
     if (usedInProp(c, 'background') || usedInProp(c, 'background-color')) s += 0.7;
-    if (usedInSelector(c, /\bbody\b/)) s += 2.0;
+    if (usedInSelector(c, 'body')) s += 2.0;
     return s;
   },
   used
@@ -576,6 +592,11 @@ if (features.includes('typography')) {
   for (const [, data] of byFontFamily) {
     data.hints = new Set();
     for (const sel of data.selectors || []) {
+      const aliasHints = selectorAliasesFor(sel);
+      if (aliasHints.size) {
+        aliasHints.forEach((h) => data.hints.add(h));
+        continue;
+      }
       if (headingRe.test(sel)) data.hints.add('heading');
       if (bodyRe.test(sel)) data.hints.add('body');
       if (monoRe.test(sel)) data.hints.add('monospace');
@@ -1489,6 +1510,47 @@ function parseConvert(spec) {
       return { from, to };
     })
     .filter(Boolean);
+}
+
+/**
+ * Parse the `--selector-alias` specification.
+ * Accepts semicolon-separated pairs like "h1,h2:heading; body:body" and
+ * returns a map of exact selector strings to their alias name.
+ *
+ * @param {string|null} spec Raw selector alias spec.
+ * @returns {Map<string,string>} Map of selector -> alias.
+ */
+function parseSelectorAlias(spec) {
+  const map = new Map();
+  if (!spec) return map;
+  for (const pair of spec.split(';')) {
+    const [sels, alias] = pair.split(':');
+    if (!alias) continue;
+    const a = alias.trim();
+    if (!a) continue;
+    for (const s of sels.split(',')) {
+      const sel = s.trim();
+      if (sel) map.set(sel, a);
+    }
+  }
+  return map;
+}
+
+/**
+ * Retrieve alias names for a raw selector string.
+ * Handles comma-separated selector lists.
+ *
+ * @param {string} sel Raw selector string from the CSS rule.
+ * @returns {Set<string>} Set of alias names matched for this selector.
+ */
+function selectorAliasesFor(sel) {
+  const out = new Set();
+  if (!SELECTOR_ALIASES.size) return out;
+  sel.split(',').forEach((part) => {
+    const a = SELECTOR_ALIASES.get(part.trim());
+    if (a) out.add(a);
+  });
+  return out;
 }
 
 /**
